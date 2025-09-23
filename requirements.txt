@@ -1,0 +1,11 @@
+numpy
+opencv-python
+pandas
+pydicom
+openpyxl
+torch
+timm
+albumentations
+scikit-learn
+tqdm
+torchvision

@@ -1,0 +1,39 @@
+[build-system]
+requires = ["setuptools>=64", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "fnf-open"
+version = "0.2.2"
+description = "Open-source toolkit for femoral neck fracture preprocessing and training"
+readme = "README.md"
+requires-python = ">=3.9"
+dependencies = [
+    "numpy",
+    "opencv-python",
+    "pandas",
+    "pydicom",
+    "openpyxl",
+    "torch",
+    "torchvision",
+    "timm",
+    "albumentations",
+    "scikit-learn",
+    "tqdm",
+]
+
+[project.scripts]
+fnf-prepare-external = "fnf_open.cli.prepare_external:main"
+fnf-prepare-internal = "fnf_open.cli.prepare_internal:main"
+fnf-train-classifier = "fnf_open.cli.train_classifier:main"
+fnf-run-external-pipeline = "fnf_open.cli.run_external_pipeline:main"
+fnf-evaluate-classifier = "fnf_open.cli.evaluate_classifier:main"
+fnf-train-detection = "fnf_open.cli.train_detection:main"
+fnf-evaluate-detection = "fnf_open.cli.evaluate_detection:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+
+[project.optional-dependencies]
+dev = ["black", "ruff", "pytest"]

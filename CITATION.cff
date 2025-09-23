@@ -1,0 +1,24 @@
+cff-version: 1.2.0
+message: "If you use this software, please cite the accompanying work."
+title: "Classification of Garden type of femoral neck fracture using a deep-learning algorithm"
+authors:
+  - family-names: Yang
+    given-names: Jaebeom
+  - family-names: Park
+    given-names: Jinyong
+  - family-names: Kim
+    given-names: Ji Wan
+  - family-names: Kweon
+    given-names: Jihoon
+  - family-names: Kim
+    given-names: Chul-Ho
+date-released: 2025-09-22
+version: 0.2.1
+identifiers:
+  - type: url
+    value: "https://github.com/your-org/FNF_OPEN"
+keywords:
+  - artificial intelligence
+  - deep learning
+  - femoral neck fracture
+  - Garden classification
