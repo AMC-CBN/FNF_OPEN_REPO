@@ -184,5 +184,13 @@ def load_detection_checkpoint(
 
     ckpt_path = detection_checkpoint_path(checkpoint_name, directory=checkpoint_dir)
     state = torch.load(ckpt_path, map_location=map_location)
-    model.load_state_dict(state["model"])
-    return model, state.get("cfg")
+
+    if isinstance(state, dict) and "model" in state:
+        model.load_state_dict(state["model"])
+        cfg = state.get("cfg")
+    else:
+        # Fallback for checkpoints saved as plain state dicts
+        model.load_state_dict(state)
+        cfg = None
+
+    return model, cfg
