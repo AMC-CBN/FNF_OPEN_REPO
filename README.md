@@ -45,7 +45,7 @@ Show full help for any command with `-h`.
 ## Pipeline overview
 
 1. **Detection Stage (Hip-Joint ROI)** – Train a Faster R-CNN detector on the AP/LAT pickles to localise hip joints. Ground-truth boxes follow the study specification: draw a circle centred on the femoral-neck midpoint with radius to the femoral-head extremity, add a 50 px margin, and take the circumscribing square. AP views provide two ROIs (affected + contralateral sides), LAT views provide one, yielding three ROIs per patient. Evaluate detectors with precision, recall, IoU, and, when available, mAP at IoU > 0.5.
-2. **Classification Stage (Garden Type)** – Run the classifier exclusively on the detected ROIs (never the full-frame X-ray). Each crop is resized to the backbone input (e.g., 256×256) with padding to preserve aspect, min/max normalised, and passed through an ImageNet-initialised backbone. The three branches share weights, their embeddings fuse in the classification head, and training uses a weighted `BCEWithLogitsLoss` with fold-specific class balancing. Tasks are staged: Garden I+II vs III+IV, then Garden III vs IV for displaced predictions. Optional ensembles can apply hard voting across top-K models.
+2. **Classification Stage (Garden Type)** – Run the classifier exclusively on the detected ROIs (never the full-frame X-ray). Each crop is resized to the backbone input (e.g., 256×256) with padding to preserve aspect, min/max normalised, and passed through an ImageNet-initialised backbone. The three branches share weights, their embeddings fuse in the classification head, and training uses a weighted `BCEWithLogitsLoss` with fold-specific class balancing. Tasks are staged: Garden I+II vs III+IV, then Garden III vs IV for displaced predictions. Optional ensembles can apply hard voting across top-K models. Supply `--views ap` to the CLI when you want an AP-only workflow; all LAT-specific arguments become optional in that mode.
 3. **Labels and Ground Truth** – Use the 3D-CT derived Garden label per patient (select the more severe side if labels differ). Two expert readers assign labels, resolving disagreements by consensus. Detection annotations supervise ROI localisation only and are not class labels.
 4. **Classification Evaluation Protocol** – Always evaluate on ROIs produced by the detection stage. Report accuracy, precision, recall, Dice/F1, and AUC where relevant. For confidence analysis, stratify metrics by probability thresholds (e.g., ≥95%).
 5. **Cross-Validation & Splits** – Follow 5-fold patient-level splits stratified by Garden type with a 3:1:1 train/val/test ratio per fold (permuted across folds).
@@ -104,14 +104,27 @@ Show full help for any command with `-h`.
      --backbone efficientnet_b4 \
      --epochs 200 \
      --folds 5 \
-      --ap-detection-pickle datasets/internal/preprocessed/FNF_AP_Detection_data.pkl \
-      --lat-detection-pickle datasets/internal/preprocessed/FNF_LAT_Detection_data.pkl \
-      --ap-detection-checkpoint-template "models/detection/detection_ap_fold{fold}_best.pth" \
-      --lat-detection-checkpoint-template "models/detection/detection_lat_fold{fold}_best.pth" \
-      --out models/classification
+     --ap-detection-pickle datasets/internal/preprocessed/FNF_AP_Detection_data.pkl \
+     --lat-detection-pickle datasets/internal/preprocessed/FNF_LAT_Detection_data.pkl \
+     --ap-detection-checkpoint-template "models/detection/detection_ap_fold{fold}_best.pth" \
+     --lat-detection-checkpoint-template "models/detection/detection_lat_fold{fold}_best.pth" \
+     --out models/classification
    ```
 
    Each fold writes a checkpoint to `models/classification/efficientnet_b4/g12_vs_g34/fold{n}_best.pt`, alongside `metrics.json`. Pass `--no-pretrained` only when the machine has no internet access. Use `--task g3_vs_g4` to fine-tune Garden III versus IV models (those checkpoints land under `models/classification/efficientnet_b4/g3_vs_g4/`).
+
+   To run an AP-only experiment, add `--views ap` and omit the LAT-specific inputs:
+
+   ```bash
+   fnf-train-classifier datasets/internal/preprocessed/FNF_Classification_data.pkl \
+     --views ap \
+     --backbone efficientnet_b4 \
+     --epochs 200 \
+     --folds 5 \
+     --ap-detection-pickle datasets/internal/preprocessed/FNF_AP_Detection_data.pkl \
+     --ap-detection-checkpoint-template "models/detection/detection_ap_fold{fold}_best.pth" \
+     --out models/classification
+   ```
 
 5. Evaluate saved folds (single model or ensemble) and export predictions:
 
@@ -121,15 +134,15 @@ Show full help for any command with `-h`.
      --backbone efficientnet_b4 \
      --task g12_vs_g34 \
      --ensemble mean \
-      --ap-detection-pickle datasets/internal/preprocessed/FNF_AP_Detection_data.pkl \
-      --lat-detection-pickle datasets/internal/preprocessed/FNF_LAT_Detection_data.pkl \
-      --ap-detection-checkpoint-template "models/detection/detection_ap_fold{fold}_best.pth" \
-      --lat-detection-checkpoint-template "models/detection/detection_lat_fold{fold}_best.pth" \
-      --secondary-checkpoint-dir models/classification/efficientnet_b4/g3_vs_g4 \
-      --save-predictions models/classification/efficientnet_b4/predictions.csv
+     --ap-detection-pickle datasets/internal/preprocessed/FNF_AP_Detection_data.pkl \
+     --lat-detection-pickle datasets/internal/preprocessed/FNF_LAT_Detection_data.pkl \
+     --ap-detection-checkpoint-template "models/detection/detection_ap_fold{fold}_best.pth" \
+     --lat-detection-checkpoint-template "models/detection/detection_lat_fold{fold}_best.pth" \
+     --secondary-checkpoint-dir models/classification/efficientnet_b4/g3_vs_g4 \
+     --save-predictions models/classification/efficientnet_b4/predictions.csv
    ```
 
-   The command first evaluates the Garden I+II vs III+IV classifier, then (because of `--secondary-checkpoint-dir`) automatically runs the Garden III vs IV stage on displaced predictions. Per-model metrics, optional ensemble performance (hard or mean voting), and per-patient confidence scores are printed; metrics JSON is saved next to the checkpoints (override with `--save-metrics`). The CLI defaults to the first CUDA device; pass `--device cpu` to force CPU inference or supply a GPU index. Drop `--secondary-checkpoint-dir` when you only need the binary Garden I+II vs III+IV evaluation.
+   The command first evaluates the Garden I+II vs III+IV classifier, then (because of `--secondary-checkpoint-dir`) automatically runs the Garden III vs IV stage on displaced predictions. Per-model metrics, optional ensemble performance (hard or mean voting), and per-patient confidence scores are printed; metrics JSON is saved next to the checkpoints (override with `--save-metrics`). The CLI defaults to the first CUDA device; pass `--device cpu` to force CPU inference or supply a GPU index. Use `--views ap` and drop the LAT arguments when you only need an AP-only evaluation, or keep the default for AP+LAT metrics. Drop `--secondary-checkpoint-dir` when you only need the binary Garden I+II vs III+IV evaluation.
 
 6. (Optional) Prepare an external evaluation set with `fnf-run-external-pipeline` or `fnf-prepare-external`, then repeat the detection→classification evaluation using the saved checkpoints to mirror study conditions.
 
