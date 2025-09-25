@@ -124,7 +124,7 @@ def _load_detector(checkpoint: Path, num_classes: int, device: torch.device) -> 
 
 def build_detection_crops(
     ap_detection_pickle: Path,
-    lat_detection_pickle: Path,
+    lat_detection_pickle: Optional[Path],
     *,
     ap_checkpoint: Optional[Path] = None,
     lat_checkpoint: Optional[Path] = None,
@@ -133,17 +133,23 @@ def build_detection_crops(
     score_thr: float = 0.3,
     device: torch.device | str = "cpu",
     crop_size: int = 256,
+    include_lat: bool = True,
 ) -> Dict[str, Tuple[Optional[np.ndarray], Optional[np.ndarray], Optional[np.ndarray]]]:
     """Return detector-derived crops keyed by patient serial."""
 
     device_t = torch.device(device)
 
     ap_images_by_fold = _load_detection_images_by_fold(ap_detection_pickle, "AP")
-    lat_images_by_fold = _load_detection_images_by_fold(lat_detection_pickle, "LAT")
+    if include_lat:
+        if lat_detection_pickle is None:
+            raise ValueError("LAT detection pickle is required when include_lat is True")
+        lat_images_by_fold = _load_detection_images_by_fold(lat_detection_pickle, "LAT")
+    else:
+        lat_images_by_fold = {}
 
     if not ap_images_by_fold:
         raise ValueError("AP detection pickle is empty or invalid")
-    if not lat_images_by_fold:
+    if include_lat and not lat_images_by_fold:
         raise ValueError("LAT detection pickle is empty or invalid")
 
     detected: Dict[str, Tuple[Optional[np.ndarray], Optional[np.ndarray], Optional[np.ndarray]]] = {}
@@ -175,10 +181,17 @@ def build_detection_crops(
 
     for fold in all_folds:
         ap_images = ap_images_by_fold.get(fold, {})
-        lat_images = lat_images_by_fold.get(fold, {})
+        lat_images = lat_images_by_fold.get(fold, {}) if include_lat else {}
 
         ap_checkpoint_path = _resolve_checkpoint(fold, ap_checkpoint, ap_checkpoint_template, "AP")
-        lat_checkpoint_path = _resolve_checkpoint(fold, lat_checkpoint, lat_checkpoint_template, "LAT")
+        lat_checkpoint_path: Optional[Path] = None
+        if include_lat:
+            lat_checkpoint_path = _resolve_checkpoint(
+                fold,
+                lat_checkpoint,
+                lat_checkpoint_template,
+                "LAT",
+            )
 
         if ap_checkpoint_path not in ap_model_cache:
             ap_model_cache[ap_checkpoint_path] = _load_detector(
@@ -186,7 +199,7 @@ def build_detection_crops(
                 num_classes=len(AP_CLASS_IDS) + 1,
                 device=device_t,
             )
-        if lat_checkpoint_path not in lat_model_cache:
+        if include_lat and lat_checkpoint_path is not None and lat_checkpoint_path not in lat_model_cache:
             lat_model_cache[lat_checkpoint_path] = _load_detector(
                 lat_checkpoint_path,
                 num_classes=len(LAT_CLASS_IDS) + 1,
@@ -194,7 +207,7 @@ def build_detection_crops(
             )
 
         ap_model = ap_model_cache[ap_checkpoint_path]
-        lat_model = lat_model_cache[lat_checkpoint_path]
+        lat_model = lat_model_cache.get(lat_checkpoint_path) if include_lat else None
 
         serials = set(ap_images.keys()) | set(lat_images.keys())
         for serial in sorted(serials):
@@ -224,7 +237,7 @@ def build_detection_crops(
                         fold,
                     )
 
-            if lat_image is not None:
+            if include_lat and lat_image is not None and lat_model is not None:
                 tensor = _image_to_tensor(lat_image)
                 with torch.no_grad():
                     output = lat_model([tensor.to(device_t)])[0]

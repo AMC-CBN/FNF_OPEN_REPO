@@ -36,6 +36,12 @@ def build_parser() -> argparse.ArgumentParser:
         help="Garden classification task to train",
     )
     p.add_argument(
+        "--views",
+        choices=("ap", "ap_lat"),
+        default="ap_lat",
+        help="Radiographic views to use (AP only or AP+LAT)",
+    )
+    p.add_argument(
         "-o",
         "--out",
         type=Path,
@@ -106,18 +112,25 @@ def main(argv: Sequence[str] | None = None) -> int:
     set_random_seed(args.seed)
     raw = load_pickle_dataset(args.dataset)
 
+    include_lat = args.views == "ap_lat"
+
     detected_crops = None
     if not args.use_ground_truth_crops:
-        if args.ap_detection_pickle is None or args.lat_detection_pickle is None:
+        if args.ap_detection_pickle is None:
             parser.error(
-                "Detector crops requested but detection pickles are missing. "
-                "Provide both AP and LAT detection pickles or use --use-ground-truth-crops."
+                "Detector crops requested but AP detection pickle is missing. "
+                "Provide --ap-detection-pickle or use --use-ground-truth-crops."
+            )
+        if include_lat and args.lat_detection_pickle is None:
+            parser.error(
+                "LAT detection pickle required when using LAT views. "
+                "Provide --lat-detection-pickle or select --views ap."
             )
         if args.ap_detection_checkpoint is None and args.ap_detection_checkpoint_template is None:
             parser.error(
                 "Provide either --ap-detection-checkpoint or --ap-detection-checkpoint-template."
             )
-        if args.lat_detection_checkpoint is None and args.lat_detection_checkpoint_template is None:
+        if include_lat and args.lat_detection_checkpoint is None and args.lat_detection_checkpoint_template is None:
             parser.error(
                 "Provide either --lat-detection-checkpoint or --lat-detection-checkpoint-template."
             )
@@ -146,13 +159,14 @@ def main(argv: Sequence[str] | None = None) -> int:
                         )
         detected_crops = build_detection_crops(
             ap_detection_pickle=args.ap_detection_pickle,
-            lat_detection_pickle=args.lat_detection_pickle,
+            lat_detection_pickle=args.lat_detection_pickle if include_lat else None,
             ap_checkpoint=args.ap_detection_checkpoint,
             lat_checkpoint=args.lat_detection_checkpoint,
             ap_checkpoint_template=args.ap_detection_checkpoint_template,
             lat_checkpoint_template=args.lat_detection_checkpoint_template,
             score_thr=args.detection_score_thr,
             device=detection_device,
+            include_lat=include_lat,
         )
 
     cfg = TrainingConfig(
@@ -165,6 +179,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         num_classes=1,
         task=args.task,
         use_pretrained=args.pretrained,
+        include_lat=include_lat,
     )
 
     out_dir = args.out / args.backbone / args.task

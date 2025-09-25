@@ -24,21 +24,25 @@ class PreparedClassificationDataset:
     serials: List[str]
     ap_left: List[np.ndarray]
     ap_right: List[np.ndarray]
-    lateral: List[np.ndarray]
+    lateral: Optional[List[np.ndarray]]
     labels: np.ndarray
     original_labels: np.ndarray
     fold_mapping: Optional[Dict[str, List[int]]] = None
+    include_lat: bool = True
 
     def __post_init__(self) -> None:  # pragma: no cover - defensive programming
-        lengths = {
+        expected_length = {
             len(self.serials),
             len(self.ap_left),
             len(self.ap_right),
-            len(self.lateral),
             len(self.labels),
             len(self.original_labels),
         }
-        if len(lengths) != 1:
+        if self.include_lat:
+            if self.lateral is None:
+                raise ValueError("Lateral views must be provided when include_lat is True")
+            expected_length.add(len(self.lateral))
+        if len(expected_length) != 1:
             raise ValueError("All fields in PreparedClassificationDataset must have the same length")
 
     def __len__(self) -> int:  # pragma: no cover - trivial proxy
@@ -90,18 +94,23 @@ def _append_sample(
     serial: str,
     ap_left: np.ndarray,
     ap_right: np.ndarray,
-    lat: np.ndarray,
+    lat: Optional[np.ndarray],
+    *,
     label: int,
     original_label: int,
     store: Dict[str, List[np.ndarray]],
     serials: List[str],
     original_labels: List[int],
+    include_lat: bool,
 ) -> None:
     serials.append(serial)
     original_labels.append(int(original_label))
     store.setdefault("ap_left", []).append(_coerce_image(ap_left))
     store.setdefault("ap_right", []).append(_coerce_image(ap_right))
-    store.setdefault("lat", []).append(_coerce_image(lat))
+    if include_lat:
+        if lat is None:
+            raise ValueError(f"LAT view is required but missing for serial {serial}")
+        store.setdefault("lat", []).append(_coerce_image(lat))
     store.setdefault("labels", []).append(int(label))
 
 
@@ -130,6 +139,8 @@ def prepare_classification_dataset(
     raw_dataset: MutableMapping[str, Sequence[np.ndarray]],
     task: str = "g12_vs_g34",
     detected_crops: Optional[Dict[str, Tuple[Optional[np.ndarray], Optional[np.ndarray], Optional[np.ndarray]]]] = None,
+    *,
+    include_lat: bool = True,
 ) -> PreparedClassificationDataset:
     """Filter and remap labels for a specific Garden classification task.
 
@@ -157,9 +168,10 @@ def prepare_classification_dataset(
     store: Dict[str, List[np.ndarray]] = {
         "ap_left": [],
         "ap_right": [],
-        "lat": [],
         "labels": [],
     }
+    if include_lat:
+        store["lat"] = []
     fold_mapping: Optional[Dict[str, List[int]]] = None
 
     def _map_label(label_zero_based: int) -> Optional[int]:
@@ -180,7 +192,9 @@ def prepare_classification_dataset(
         lat: np.ndarray,
         label_value: int,
     ) -> bool:
-        if left is None or right is None or lat is None:
+        if left is None or right is None:
+            return False
+        if include_lat and lat is None:
             return False
         if isinstance(label_value, np.ndarray):  # pragma: no cover - defensive
             label_int = int(label_value.item())
@@ -198,8 +212,20 @@ def prepare_classification_dataset(
             det_left, det_right, det_lat = override
             left = det_left if det_left is not None else left
             right = det_right if det_right is not None else right
-            lat = det_lat if det_lat is not None else lat
-        _append_sample(str(serial), left, right, lat, mapped, label_zero_based, store, serials, original_labels)
+            if include_lat:
+                lat = det_lat if det_lat is not None else lat
+        _append_sample(
+            str(serial),
+            left,
+            right,
+            lat,
+            label=mapped,
+            original_label=label_zero_based,
+            store=store,
+            serials=serials,
+            original_labels=original_labels,
+            include_lat=include_lat,
+        )
         return True
 
     if raw_dataset and isinstance(next(iter(raw_dataset.values())), dict):
@@ -230,14 +256,17 @@ def prepare_classification_dataset(
     if not serials:
         raise ValueError("No samples available after filtering; check dataset contents and task selection")
 
+    lateral_store = store.get("lat") if include_lat else None
+
     filtered_dataset = PreparedClassificationDataset(
         serials=serials,
         ap_left=store["ap_left"],
         ap_right=store["ap_right"],
-        lateral=store["lat"],
+        lateral=lateral_store,
         labels=np.asarray(store["labels"], dtype=int),
         original_labels=np.asarray(original_labels, dtype=int),
         fold_mapping=fold_mapping,
+        include_lat=include_lat,
     )
 
     return filtered_dataset
@@ -265,6 +294,7 @@ class MultiViewDataset(Dataset):
     ) -> None:
         self._data = data
         self._transform = transform
+        self._include_lat = bool(getattr(data, "include_lat", True))
         if indices is None:
             self._indices = list(range(len(data)))
         else:
@@ -277,21 +307,28 @@ class MultiViewDataset(Dataset):
         real_idx = int(self._indices[idx])
         ap_left = _ensure_three_channels(self._data.ap_left[real_idx])
         ap_right = _ensure_three_channels(self._data.ap_right[real_idx])
-        lat = _ensure_three_channels(self._data.lateral[real_idx])
 
-        transformed = self._transform(
-            image=ap_left,
-            image_lat=lat,
-            image_ap_right=ap_right,
-        )
+        transform_inputs = {
+            "image": ap_left,
+            "image_ap_right": ap_right,
+        }
+        if self._include_lat:
+            lateral_list = self._data.lateral
+            if lateral_list is None:
+                raise ValueError("Prepared dataset missing LAT views but include_lat is True")
+            lat = _ensure_three_channels(lateral_list[real_idx])
+            transform_inputs["image_lat"] = lat
+
+        transformed = self._transform(**transform_inputs)
 
         sample = {
             "ap_left": transformed["image"],
             "ap_right": transformed["image_ap_right"],
-            "lat": transformed["image_lat"],
             "label": torch.tensor(self._data.labels[real_idx], dtype=torch.long),
             "original_label": torch.tensor(self._data.original_labels[real_idx], dtype=torch.long),
         }
+        if self._include_lat:
+            sample["lat"] = transformed["image_lat"]
         return sample
 
     @property
@@ -305,3 +342,9 @@ class MultiViewDataset(Dataset):
         """Return the original Garden labels (zero-based)."""
 
         return self._data.original_labels[self._indices]
+
+    @property
+    def include_lat(self) -> bool:
+        """Return whether LAT views are included."""
+
+        return self._include_lat

@@ -18,6 +18,7 @@ class TrainingConfig:
     num_classes: int = 1
     task: str = "g12_vs_g34"
     use_pretrained: bool = True
+    include_lat: bool = True
 
 @dataclass
 class FoldReport:

@@ -136,6 +136,54 @@ def _normalise_state_dict(
     return state
 
 
+def _extract_include_lat(metadata: object) -> Optional[bool]:
+    if not isinstance(metadata, dict):
+        return None
+    config = metadata.get("config")
+    if isinstance(config, dict):
+        value = config.get("include_lat")
+        if isinstance(value, bool):
+            return value
+    direct = metadata.get("include_lat")
+    if isinstance(direct, bool):
+        return direct
+    return None
+
+
+def _unpack_checkpoint(
+    checkpoint_path: Path,
+) -> Tuple[MutableMapping[str, torch.Tensor], dict[str, object]]:
+    state = torch.load(checkpoint_path, map_location="cpu")
+    model_state: MutableMapping[str, torch.Tensor]
+    metadata: dict[str, object]
+
+    if isinstance(state, dict):
+        if "model_state" in state:
+            model_state = state["model_state"]  # type: ignore[assignment]
+            metadata = state.get("metadata", {})  # type: ignore[assignment]
+        elif "model" in state:
+            model_state = state["model"]  # type: ignore[assignment]
+            metadata = state.get("metadata", {})  # type: ignore[assignment]
+        elif "state_dict" in state:
+            model_state = state["state_dict"]  # type: ignore[assignment]
+            metadata = state.get("metadata", {})  # type: ignore[assignment]
+        else:
+            if all(isinstance(k, str) for k in state.keys()):
+                model_state = state  # type: ignore[assignment]
+                metadata = {}
+            else:
+                raise KeyError(
+                    f"Checkpoint {checkpoint_path} does not contain a recognised state dict"
+                )
+    else:
+        model_state = state  # type: ignore[assignment]
+        metadata = {}
+
+    if not isinstance(metadata, dict):
+        metadata = {}
+    return model_state, metadata
+
+
 def _infer_num_outputs(state: MutableMapping[str, torch.Tensor], default: int = 1) -> int:
     for key, value in state.items():
         if key.endswith("classifier.0.weight") and value.ndim == 2:
@@ -159,40 +207,20 @@ def _load_logits(
     backbone: str,
     loader: DataLoader,
     device: torch.device,
+    *,
+    num_views: int,
 ) -> Tuple[torch.Tensor, dict[str, object], int]:
     LOGGER.info("Evaluating checkpoint %s", checkpoint_path.name)
-    state = torch.load(checkpoint_path, map_location="cpu")
-    model_state: MutableMapping[str, torch.Tensor]
-    metadata: dict[str, object]
-
-    if isinstance(state, dict):
-        if "model_state" in state:
-            model_state = state["model_state"]
-            metadata = state.get("metadata", {})
-        elif "model" in state:
-            model_state = state["model"]
-            metadata = state.get("metadata", {})
-        elif "state_dict" in state:
-            model_state = state["state_dict"]
-            metadata = state.get("metadata", {})
-        else:
-            # assume the dict itself is a state_dict (legacy saves)
-            if all(isinstance(k, str) for k in state.keys()):
-                model_state = state  # type: ignore[assignment]
-                metadata = {}
-            else:
-                raise KeyError(
-                    f"Checkpoint {checkpoint_path} does not contain a recognised state dict"
-                )
-    else:
-        # legacy torch.save(model.state_dict()) returns an OrderedDict
-        model_state = state  # type: ignore[assignment]
-        metadata = {}
+    model_state, metadata = _unpack_checkpoint(checkpoint_path)
 
     has_feature_extractor = any(key.startswith("feature_extractor") for key in model_state)
     is_legacy = not has_feature_extractor or any(
         key.startswith("input") or key.startswith("branches.") for key in model_state
     )
+    if is_legacy and num_views != 3:
+        raise ValueError(
+            f"Legacy checkpoint {checkpoint_path} only supports AP+LAT evaluation (num_views=3)."
+        )
     model_state = _normalise_state_dict(model_state, legacy=is_legacy)
 
     metadata_config = metadata.get("config") if isinstance(metadata, dict) else None
@@ -201,6 +229,15 @@ def _load_logits(
         maybe_value = metadata_config.get("num_classes")
         if isinstance(maybe_value, int):
             config_num_classes = maybe_value
+    config_include_lat = _extract_include_lat(metadata)
+
+    if config_include_lat is not None:
+        expected_from_metadata = 3 if config_include_lat else 2
+        if expected_from_metadata != num_views:
+            raise ValueError(
+                f"Checkpoint {checkpoint_path} expects {'AP+LAT' if config_include_lat else 'AP only'} views, "
+                f"but evaluation was configured with {num_views}."
+            )
 
     inferred_outputs = _infer_num_outputs(model_state, default=config_num_classes or 1)
 
@@ -215,6 +252,7 @@ def _load_logits(
             backbone=backbone,
             num_classes=inferred_outputs,
             pretrained=False,
+            num_views=num_views,
         )
 
     load_result = model.load_state_dict(model_state, strict=False)
@@ -238,7 +276,8 @@ def _load_logits(
         for batch in loader:
             ap_right = batch["ap_right"].to(device)
             ap_left = batch["ap_left"].to(device)
-            lat = batch["lat"].to(device)
+            lat_tensor = batch.get("lat")
+            lat = lat_tensor.to(device) if isinstance(lat_tensor, torch.Tensor) else None
             logits = model(ap_right, ap_left, lat)
             logits_list.append(logits.cpu())
 
@@ -333,6 +372,12 @@ def build_parser() -> argparse.ArgumentParser:
         choices=("g12_vs_g34", "g3_vs_g4"),
         default="g12_vs_g34",
         help="Classification task the checkpoints were trained for",
+    )
+    parser.add_argument(
+        "--views",
+        choices=("auto", "ap", "ap_lat"),
+        default="auto",
+        help="Radiographic views to evaluate with (auto-detect, AP only, or AP+LAT)",
     )
     parser.add_argument(
         "--device",
@@ -434,6 +479,42 @@ def main(argv: Sequence[str] | None = None) -> int:
     if args.save_predictions and args.ensemble == "none" and len(checkpoint_paths) > 1:
         parser.error("--save-predictions requires an ensemble method when multiple checkpoints are used")
 
+    if args.views == "ap":
+        include_lat = False
+    elif args.views == "ap_lat":
+        include_lat = True
+    else:
+        inferred_flags: List[bool] = []
+        for path in checkpoint_paths:
+            try:
+                state_dict, metadata = _unpack_checkpoint(path)
+            except Exception as exc:
+                LOGGER.warning(
+                    "Failed to inspect checkpoint %s for view inference: %s",
+                    path,
+                    exc,
+                )
+                continue
+            flag = _extract_include_lat(metadata)
+            if flag is not None:
+                inferred_flags.append(flag)
+            del state_dict
+        if inferred_flags:
+            unique_flags = set(inferred_flags)
+            if len(unique_flags) > 1:
+                parser.error(
+                    "Checkpoints disagree on stored view configuration; specify --views explicitly."
+                )
+            include_lat = unique_flags.pop()
+        else:
+            LOGGER.warning(
+                "Could not infer view configuration from checkpoints; defaulting to AP+LAT evaluation."
+            )
+            include_lat = True
+
+    num_views = 3 if include_lat else 2
+    LOGGER.info("Evaluating with %s views", "AP+LAT" if include_lat else "AP only")
+
     raw_dataset = load_pickle_dataset(args.dataset)
 
     def _resolve_device_string(device_str: str | None, purpose: str) -> str:
@@ -471,37 +552,48 @@ def main(argv: Sequence[str] | None = None) -> int:
 
     detected_crops = None
     if not args.use_ground_truth_crops:
-        if args.ap_detection_pickle is None or args.lat_detection_pickle is None:
+        if args.ap_detection_pickle is None:
             parser.error(
-                "Detector crops requested but detection pickles are missing. "
-                "Provide both AP and LAT detection pickles or use --use-ground-truth-crops."
+                "Detector crops requested but AP detection pickle is missing. "
+                "Provide --ap-detection-pickle or use --use-ground-truth-crops."
+            )
+        if include_lat and args.lat_detection_pickle is None:
+            parser.error(
+                "LAT detection pickle required for AP+LAT evaluation. "
+                "Provide --lat-detection-pickle or select --views ap."
             )
         if args.ap_detection_checkpoint is None and args.ap_detection_checkpoint_template is None:
             parser.error(
                 "Provide either --ap-detection-checkpoint or --ap-detection-checkpoint-template."
             )
-        if args.lat_detection_checkpoint is None and args.lat_detection_checkpoint_template is None:
+        if include_lat and args.lat_detection_checkpoint is None and args.lat_detection_checkpoint_template is None:
             parser.error(
                 "Provide either --lat-detection-checkpoint or --lat-detection-checkpoint-template."
             )
 
         detected_crops = build_detection_crops(
             ap_detection_pickle=args.ap_detection_pickle,
-            lat_detection_pickle=args.lat_detection_pickle,
+            lat_detection_pickle=args.lat_detection_pickle if include_lat else None,
             ap_checkpoint=args.ap_detection_checkpoint,
             lat_checkpoint=args.lat_detection_checkpoint,
             ap_checkpoint_template=args.ap_detection_checkpoint_template,
             lat_checkpoint_template=args.lat_detection_checkpoint_template,
             score_thr=args.detection_score_thr,
             device=detection_device_str,
+            include_lat=include_lat,
         )
 
     prepared = prepare_classification_dataset(
         raw_dataset,
         task=args.task,
         detected_crops=detected_crops,
+        include_lat=include_lat,
     )
-    _, eval_transform = create_transforms(args.task, augment=False)
+    _, eval_transform = create_transforms(
+        args.task,
+        augment=False,
+        include_lat=include_lat,
+    )
     dataset = MultiViewDataset(prepared, eval_transform)
 
     device = torch.device(classification_device_str)
@@ -520,12 +612,22 @@ def main(argv: Sequence[str] | None = None) -> int:
     metadata_per_model: List[dict[str, object]] = []
     positive_probabilities: List[torch.Tensor] = []
     for path in checkpoint_paths:
-        logits, metadata, _ = _load_logits(path, args.backbone, loader, device)
+        logits, metadata, _ = _load_logits(
+            path,
+            args.backbone,
+            loader,
+            device,
+            num_views=num_views,
+        )
         logits_per_model.append(logits)
         metadata_per_model.append(metadata)
         positive_probabilities.append(_logits_to_positive_prob(logits))
 
-    results: dict[str, object] = {"device": str(device), "models": []}
+    results: dict[str, object] = {
+        "device": str(device),
+        "views": "ap_lat" if include_lat else "ap",
+        "models": [],
+    }
     for path, logits, metadata in zip(checkpoint_paths, logits_per_model, metadata_per_model):
         metrics, predictions, confidence, _ = _metrics_from_logits(logits, targets)
         model_entry = {
@@ -620,10 +722,15 @@ def main(argv: Sequence[str] | None = None) -> int:
                 raw_dataset,
                 task=args.secondary_task,
                 detected_crops=detected_crops,
+                include_lat=include_lat,
             )
         except ValueError as exc:  # pragma: no cover - user input validation
             parser.error(f"Secondary dataset preparation failed: {exc}")
-        _, secondary_eval_transform = create_transforms(args.secondary_task, augment=False)
+        _, secondary_eval_transform = create_transforms(
+            args.secondary_task,
+            augment=False,
+            include_lat=include_lat,
+        )
         secondary_dataset = MultiViewDataset(secondary_prepared, secondary_eval_transform)
         secondary_loader = DataLoader(
             secondary_dataset,
@@ -638,7 +745,13 @@ def main(argv: Sequence[str] | None = None) -> int:
         sec_metadata_per_model: List[dict[str, object]] = []
         sec_positive_probabilities: List[torch.Tensor] = []
         for path in secondary_paths:
-            logits, metadata, _ = _load_logits(path, args.backbone, secondary_loader, device)
+            logits, metadata, _ = _load_logits(
+                path,
+                args.backbone,
+                secondary_loader,
+                device,
+                num_views=num_views,
+            )
             sec_logits_per_model.append(logits)
             sec_metadata_per_model.append(metadata)
             sec_positive_probabilities.append(_logits_to_positive_prob(logits))

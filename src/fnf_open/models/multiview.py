@@ -26,6 +26,7 @@ class MultiBranchClassifier(nn.Module):
         num_classes: int = 1,
         dropout: float = 0.0,
         pretrained: bool = True,
+        num_views: int = 3,
     ) -> None:
         super().__init__()
         # Create a feature extractor that returns a pooled embedding
@@ -36,18 +37,33 @@ class MultiBranchClassifier(nn.Module):
             global_pool="avg",
         )
         feature_dim = self.feature_extractor.num_features
+        if num_views not in (2, 3):
+            raise ValueError(f"Unsupported number of views: {num_views}. Expected 2 or 3.")
+        self.num_views = num_views
 
-        # Three tied branches: forward uses the same module three times (weight sharing)
-        self.branches: List[nn.Module] = nn.ModuleList([self.feature_extractor, self.feature_extractor, self.feature_extractor])
+        # Weight-shared branches: forward reuses the same module (weight sharing)
+        self.branches: List[nn.Module] = nn.ModuleList(
+            [self.feature_extractor for _ in range(num_views)]
+        )
 
         head: List[nn.Module] = []
         if dropout > 0:
             head.append(nn.Dropout(dropout))
-        head.append(nn.Linear(feature_dim * 3, num_classes))
+        head.append(nn.Linear(feature_dim * num_views, num_classes))
         self.classifier = nn.Sequential(*head)
 
-    def forward(self, ap_right: torch.Tensor, ap_left: torch.Tensor, lat: torch.Tensor) -> torch.Tensor:
-        features = [branch(x) for branch, x in zip(self.branches, (ap_right, ap_left, lat))]
+    def forward(
+        self,
+        ap_right: torch.Tensor,
+        ap_left: torch.Tensor,
+        lat: torch.Tensor | None = None,
+    ) -> torch.Tensor:
+        inputs: List[torch.Tensor] = [ap_right, ap_left]
+        if self.num_views == 3:
+            if lat is None:
+                raise ValueError("LAT tensor is required when num_views is 3")
+            inputs.append(lat)
+        features = [branch(x) for branch, x in zip(self.branches, inputs)]
         combined = torch.cat(features, dim=1)
         return self.classifier(combined)
 

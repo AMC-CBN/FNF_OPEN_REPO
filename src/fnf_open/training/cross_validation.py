@@ -76,7 +76,8 @@ def _train_one_epoch(
     for batch in loader:
         ap_l = batch["ap_left"].to(device)
         ap_r = batch["ap_right"].to(device)
-        lat = batch["lat"].to(device)
+        lat = batch.get("lat")
+        lat = lat.to(device) if isinstance(lat, torch.Tensor) else None
         y = batch["label"].to(device).float().unsqueeze(1)
         optimizer.zero_grad(set_to_none=True)
         logits = model(ap_r, ap_l, lat)
@@ -100,7 +101,8 @@ def _evaluate(
     for batch in loader:
         ap_l = batch["ap_left"].to(device)
         ap_r = batch["ap_right"].to(device)
-        lat = batch["lat"].to(device)
+        lat = batch.get("lat")
+        lat = lat.to(device) if isinstance(lat, torch.Tensor) else None
         y = batch["label"].to(device).float().unsqueeze(1)
         logits = model(ap_r, ap_l, lat)
         loss = criterion(logits, y)
@@ -131,8 +133,13 @@ def train_model_cross_validation(
         raw_dataset,
         task=cfg.task,
         detected_crops=detected_crops,
+        include_lat=cfg.include_lat,
     )
-    train_transform, eval_transform = create_transforms(cfg.task, augment=True)
+    train_transform, eval_transform = create_transforms(
+        cfg.task,
+        augment=True,
+        include_lat=cfg.include_lat,
+    )
     labels = prepared.labels
 
     fold_mapping = prepared.fold_mapping
@@ -211,6 +218,7 @@ def train_model_cross_validation(
             backbone=cfg.model_name,
             num_classes=cfg.num_classes,
             pretrained=cfg.use_pretrained,
+            num_views=3 if cfg.include_lat else 2,
         )
         model.to(device_t)
         pos_weight_value = _compute_pos_weight(prepared.labels[train_idx])
