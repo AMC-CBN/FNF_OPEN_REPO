@@ -1,22 +1,35 @@
 cff-version: 1.2.0
 message: "If you use this software, please cite the accompanying work."
-title: "Classification of Garden type of femoral neck fracture using a deep-learning algorithm"
+title: "Garden classification of femoral neck fracture using a deep-learning algorithm"
 authors:
   - family-names: Yang
     given-names: Jaebeom
+    affiliation: "Department of Biomedical Engineering, Asan Medical Center, University of Ulsan College of Medicine, Seoul, Republic of Korea"
   - family-names: Park
     given-names: Jinyong
+    affiliation: "Department of Orthopedic Surgery, Asan Medical Center, University of Ulsan College of Medicine, Seoul, Republic of Korea"
+  - family-names: Park
+    given-names: Keunwoo
+    affiliation: "Department of Biomedical Engineering, Asan Medical Center, University of Ulsan College of Medicine, Seoul, Republic of Korea"
+  - family-names: Lim
+    given-names: Eic Ju
+    affiliation: "Department of Orthopedic Surgery, Chungbuk National University Hospital, Chungbuk National University College of Medicine, Cheongju, Republic of Korea"
   - family-names: Kim
     given-names: Ji Wan
+    affiliation: "Department of Orthopedic Surgery, Asan Medical Center, University of Ulsan College of Medicine, Seoul, Republic of Korea"
   - family-names: Kweon
     given-names: Jihoon
+    affiliation: "Department of Biomedical Engineering, Asan Medical Center, University of Ulsan College of Medicine, Seoul, Republic of Korea"
+    email: kjihoon2@naver.com
   - family-names: Kim
     given-names: Chul-Ho
-date-released: 2025-09-22
+    affiliation: "Department of Orthopedic Surgery, Asan Medical Center, University of Ulsan College of Medicine, Seoul, Republic of Korea"
+    email: oschulhokim@gmail.com
+date-released: 2025-09-18
 version: 0.2.1
 identifiers:
   - type: url
-    value: "https://github.com/your-org/FNF_OPEN"
+    value: "https://github.com/AMC-CBN/FNF_OPEN_REPO"
 keywords:
   - artificial intelligence
   - deep learning
