@@ -13,6 +13,7 @@ import torch
 from sklearn.metrics import confusion_matrix, precision_recall_fscore_support
 from torch.utils.data import DataLoader
 
+from ..classification.detection_crops import build_detection_crops
 from ..data.classification_dataset import MultiViewDataset, prepare_classification_dataset
 from ..data.loading import load_pickle_dataset
 from ..models.multiview import LegacyMultiBranchClassifier, MultiBranchClassifier
@@ -373,6 +374,49 @@ def build_parser() -> argparse.ArgumentParser:
         type=Path,
         help="Optional JSON file to store aggregated evaluation metrics (defaults to checkpoint dir)",
     )
+    parser.add_argument(
+        "--ap-detection-pickle",
+        type=Path,
+        help="Path to FNF_AP_Detection_data.pkl for detector-derived crops",
+    )
+    parser.add_argument(
+        "--lat-detection-pickle",
+        type=Path,
+        help="Path to FNF_LAT_Detection_data.pkl for detector-derived crops",
+    )
+    parser.add_argument(
+        "--ap-detection-checkpoint",
+        type=Path,
+        help="Checkpoint for the AP Faster R-CNN detector",
+    )
+    parser.add_argument(
+        "--lat-detection-checkpoint",
+        type=Path,
+        help="Checkpoint for the LAT Faster R-CNN detector",
+    )
+    parser.add_argument(
+        "--ap-detection-checkpoint-template",
+        help="String template for AP detector checkpoints (use {fold})",
+    )
+    parser.add_argument(
+        "--lat-detection-checkpoint-template",
+        help="String template for LAT detector checkpoints (use {fold})",
+    )
+    parser.add_argument(
+        "--detection-score-thr",
+        type=float,
+        default=0.3,
+        help="Minimum detector score when selecting hip-joint boxes",
+    )
+    parser.add_argument(
+        "--detection-device",
+        help="Device string for detector inference (defaults to --device)",
+    )
+    parser.add_argument(
+        "--use-ground-truth-crops",
+        action="store_true",
+        help="Reuse stored ground-truth crops instead of detector outputs",
+    )
     parser.add_argument("--verbose", action="store_true", help="Enable verbose logging output")
     return parser
 
@@ -391,33 +435,76 @@ def main(argv: Sequence[str] | None = None) -> int:
         parser.error("--save-predictions requires an ensemble method when multiple checkpoints are used")
 
     raw_dataset = load_pickle_dataset(args.dataset)
-    prepared = prepare_classification_dataset(raw_dataset, task=args.task)
+
+    def _resolve_device_string(device_str: str | None, purpose: str) -> str:
+        if not device_str:
+            return "cpu"
+        resolved = device_str
+        lowered = device_str.lower()
+        if lowered.startswith("cuda"):
+            if not torch.cuda.is_available():
+                LOGGER.warning(
+                    "CUDA requested for %s via device string '%s' but is unavailable; falling back to CPU",
+                    purpose,
+                    device_str,
+                )
+                resolved = "cpu"
+            else:
+                _, _, index_str = device_str.partition(":")
+                if index_str:
+                    try:
+                        index = int(index_str)
+                    except ValueError as exc:
+                        raise ValueError(
+                            f"Invalid CUDA device '{device_str}' for {purpose}; expected format cuda[:index]"
+                        ) from exc
+                    device_count = torch.cuda.device_count()
+                    if index < 0 or index >= device_count:
+                        raise ValueError(
+                            f"Invalid CUDA device '{device_str}' for {purpose}. Available indices: 0..{device_count - 1}"
+                        )
+        return resolved
+
+    classification_device_str = _resolve_device_string(str(args.device), "classification")
+    detection_device_input = str(args.detection_device) if args.detection_device else classification_device_str
+    detection_device_str = _resolve_device_string(detection_device_input, "detection")
+
+    detected_crops = None
+    if not args.use_ground_truth_crops:
+        if args.ap_detection_pickle is None or args.lat_detection_pickle is None:
+            parser.error(
+                "Detector crops requested but detection pickles are missing. "
+                "Provide both AP and LAT detection pickles or use --use-ground-truth-crops."
+            )
+        if args.ap_detection_checkpoint is None and args.ap_detection_checkpoint_template is None:
+            parser.error(
+                "Provide either --ap-detection-checkpoint or --ap-detection-checkpoint-template."
+            )
+        if args.lat_detection_checkpoint is None and args.lat_detection_checkpoint_template is None:
+            parser.error(
+                "Provide either --lat-detection-checkpoint or --lat-detection-checkpoint-template."
+            )
+
+        detected_crops = build_detection_crops(
+            ap_detection_pickle=args.ap_detection_pickle,
+            lat_detection_pickle=args.lat_detection_pickle,
+            ap_checkpoint=args.ap_detection_checkpoint,
+            lat_checkpoint=args.lat_detection_checkpoint,
+            ap_checkpoint_template=args.ap_detection_checkpoint_template,
+            lat_checkpoint_template=args.lat_detection_checkpoint_template,
+            score_thr=args.detection_score_thr,
+            device=detection_device_str,
+        )
+
+    prepared = prepare_classification_dataset(
+        raw_dataset,
+        task=args.task,
+        detected_crops=detected_crops,
+    )
     _, eval_transform = create_transforms(args.task, augment=False)
     dataset = MultiViewDataset(prepared, eval_transform)
 
-    requested_device = str(args.device)
-    if requested_device.lower().startswith("cuda"):
-        if not torch.cuda.is_available():
-            LOGGER.warning(
-                "CUDA requested via --device=%s but is not available; falling back to CPU",
-                requested_device,
-            )
-            requested_device = "cpu"
-        else:
-            # Validate the requested CUDA index if provided (e.g. "cuda:1")
-            try:
-                _, _, index_str = requested_device.partition(":")
-                if index_str:
-                    index = int(index_str)
-                    device_count = torch.cuda.device_count()
-                    if index < 0 or index >= device_count:
-                        raise ValueError
-            except ValueError:
-                raise ValueError(
-                    f"Invalid CUDA device '{requested_device}'. Available device indices: 0..{torch.cuda.device_count() - 1}."
-                ) from None
-
-    device = torch.device(requested_device)
+    device = torch.device(classification_device_str)
 
     loader = DataLoader(
         dataset,
@@ -529,7 +616,11 @@ def main(argv: Sequence[str] | None = None) -> int:
             parser.error("Secondary checkpoints require the primary task to be g12_vs_g34")
 
         try:
-            secondary_prepared = prepare_classification_dataset(raw_dataset, task=args.secondary_task)
+            secondary_prepared = prepare_classification_dataset(
+                raw_dataset,
+                task=args.secondary_task,
+                detected_crops=detected_crops,
+            )
         except ValueError as exc:  # pragma: no cover - user input validation
             parser.error(f"Secondary dataset preparation failed: {exc}")
         _, secondary_eval_transform = create_transforms(args.secondary_task, augment=False)

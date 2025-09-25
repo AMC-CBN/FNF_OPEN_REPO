@@ -42,7 +42,8 @@ def main():
     parser.add_argument("--iou_thr", type=float, default=0.5)
     args = parser.parse_args()
 
-    classes = ["Left","Right"]
+    view = args.view.upper()
+    classes = ["Left", "Right"] if view == "AP" else ["LAT_Neck"]
     all_folds = ["fold1","fold2","fold3","fold4","fold5"]
 
     evaluate_only = args.checkpoint is not None
@@ -71,14 +72,14 @@ def main():
             [val_fold],
             classes=classes,
             transform=tfm,
-            view_key=args.view,
+            view_key=view,
         )
         val_ds.collate_fn = detection_collate
 
-        model = build_faster_rcnn(num_classes=3, weights="DEFAULT")
+        model = build_faster_rcnn(num_classes=len(classes) + 1, weights="DEFAULT")
         cfg_name = args.name if len(requested_folds) == 1 else f"{args.name}_fold{fold_idx}"
         cfg = TrainConfig(
-            num_classes=3,
+            num_classes=len(classes) + 1,
             epochs=args.epochs,
             batch_size=args.batch_size,
             lr=args.lr,
@@ -114,7 +115,7 @@ def main():
             train_folds,
             classes=classes,
             transform=tfm,
-            view_key=args.view,
+            view_key=view,
         )
         train_ds.collate_fn = detection_collate
 

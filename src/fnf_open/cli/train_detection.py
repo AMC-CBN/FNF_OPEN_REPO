@@ -17,7 +17,10 @@ from ..detection import (
 )
 
 ALL_FOLDS = ["fold1", "fold2", "fold3", "fold4", "fold5"]
-CLASSES = ["Left", "Right"]
+VIEW_CLASSES = {
+    "AP": ["Left", "Right"],
+    "LAT": ["LAT_Neck"],
+}
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -76,8 +79,12 @@ def main(argv: List[str] | None = None) -> int:
     requested = _parse_folds(args.fold)
     transform = build_detection_transform(args.image_size)
 
+    view = args.view.upper()
+    view_lower = view.lower()
+    classes = VIEW_CLASSES[view]
+
     base_cfg = TrainConfig(
-        num_classes=len(CLASSES) + 1,
+        num_classes=len(classes) + 1,
         epochs=args.epochs,
         lr=args.lr,
         weight_decay=args.weight_decay,
@@ -90,7 +97,7 @@ def main(argv: List[str] | None = None) -> int:
         patience=args.patience,
         save_best_metric=args.save_best_metric,
         out_dir=str(args.out) if args.out else str(Path("models/detection")),
-        name=f"detection_{args.view.lower()}",
+        name=f"detection_{view_lower}",
     )
 
     summaries: List[Dict[str, object]] = []
@@ -98,21 +105,21 @@ def main(argv: List[str] | None = None) -> int:
         val_fold = ALL_FOLDS[fold_index - 1]
         train_folds = [fold for fold in ALL_FOLDS if fold != val_fold]
 
-        cfg = replace(base_cfg, name=f"detection_{args.view.lower()}_fold{fold_index}")
+        cfg = replace(base_cfg, name=f"detection_{view_lower}_fold{fold_index}")
 
         train_ds = PickleHipDetectionDataset(
             args.dataset,
             train_folds,
-            classes=CLASSES,
+            classes=classes,
             transform=transform,
-            view_key=args.view,
+            view_key=view,
         )
         val_ds = PickleHipDetectionDataset(
             args.dataset,
             [val_fold],
-            classes=CLASSES,
+            classes=classes,
             transform=transform,
-            view_key=args.view,
+            view_key=view,
         )
 
         result = train_detection(train_ds, val_ds, cfg)

@@ -129,6 +129,7 @@ def _iter_fold_samples(
 def prepare_classification_dataset(
     raw_dataset: MutableMapping[str, Sequence[np.ndarray]],
     task: str = "g12_vs_g34",
+    detected_crops: Optional[Dict[str, Tuple[Optional[np.ndarray], Optional[np.ndarray], Optional[np.ndarray]]]] = None,
 ) -> PreparedClassificationDataset:
     """Filter and remap labels for a specific Garden classification task.
 
@@ -189,6 +190,15 @@ def prepare_classification_dataset(
         mapped = _map_label(label_zero_based)
         if mapped is None:
             return False
+        if detected_crops is not None:
+            override = detected_crops.get(str(serial))
+        else:
+            override = None
+        if override is not None:
+            det_left, det_right, det_lat = override
+            left = det_left if det_left is not None else left
+            right = det_right if det_right is not None else right
+            lat = det_lat if det_lat is not None else lat
         _append_sample(str(serial), left, right, lat, mapped, label_zero_based, store, serials, original_labels)
         return True
 

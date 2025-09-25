@@ -125,8 +125,13 @@ def train_model_cross_validation(
     num_folds: int = 5,
     device: str | torch.device = "cpu",
     checkpoint_dir: Optional[Path] = None,
+    detected_crops: Optional[Dict[str, Tuple[Optional[np.ndarray], Optional[np.ndarray], Optional[np.ndarray]]]] = None,
 ) -> List[FoldReport]:
-    prepared = prepare_classification_dataset(raw_dataset, task=cfg.task)
+    prepared = prepare_classification_dataset(
+        raw_dataset,
+        task=cfg.task,
+        detected_crops=detected_crops,
+    )
     train_transform, eval_transform = create_transforms(cfg.task, augment=True)
     labels = prepared.labels
 

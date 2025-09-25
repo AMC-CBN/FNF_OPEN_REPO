@@ -104,7 +104,11 @@ Show full help for any command with `-h`.
      --backbone efficientnet_b4 \
      --epochs 200 \
      --folds 5 \
-     --out models/classification
+      --ap-detection-pickle datasets/internal/preprocessed/FNF_AP_Detection_data.pkl \
+      --lat-detection-pickle datasets/internal/preprocessed/FNF_LAT_Detection_data.pkl \
+      --ap-detection-checkpoint-template "models/detection/detection_ap_fold{fold}_best.pth" \
+      --lat-detection-checkpoint-template "models/detection/detection_lat_fold{fold}_best.pth" \
+      --out models/classification
    ```
 
    Each fold writes a checkpoint to `models/classification/efficientnet_b4/g12_vs_g34/fold{n}_best.pt`, alongside `metrics.json`. Pass `--no-pretrained` only when the machine has no internet access. Use `--task g3_vs_g4` to fine-tune Garden III versus IV models (those checkpoints land under `models/classification/efficientnet_b4/g3_vs_g4/`).
@@ -117,8 +121,12 @@ Show full help for any command with `-h`.
      --backbone efficientnet_b4 \
      --task g12_vs_g34 \
      --ensemble mean \
-     --secondary-checkpoint-dir models/classification/efficientnet_b4/g3_vs_g4 \
-     --save-predictions models/classification/efficientnet_b4/predictions.csv
+      --ap-detection-pickle datasets/internal/preprocessed/FNF_AP_Detection_data.pkl \
+      --lat-detection-pickle datasets/internal/preprocessed/FNF_LAT_Detection_data.pkl \
+      --ap-detection-checkpoint-template "models/detection/detection_ap_fold{fold}_best.pth" \
+      --lat-detection-checkpoint-template "models/detection/detection_lat_fold{fold}_best.pth" \
+      --secondary-checkpoint-dir models/classification/efficientnet_b4/g3_vs_g4 \
+      --save-predictions models/classification/efficientnet_b4/predictions.csv
    ```
 
    The command first evaluates the Garden I+II vs III+IV classifier, then (because of `--secondary-checkpoint-dir`) automatically runs the Garden III vs IV stage on displaced predictions. Per-model metrics, optional ensemble performance (hard or mean voting), and per-patient confidence scores are printed; metrics JSON is saved next to the checkpoints (override with `--save-metrics`). The CLI defaults to the first CUDA device; pass `--device cpu` to force CPU inference or supply a GPU index. Drop `--secondary-checkpoint-dir` when you only need the binary Garden I+II vs III+IV evaluation.
@@ -152,8 +160,16 @@ from fnf_open import (
     train_model_cross_validation,
     aggregate_reports,
 )
+from fnf_open.classification.detection_crops import build_detection_crops
 
 dataset = load_pickle_dataset(Path("datasets/internal/preprocessed/FNF_Classification_data.pkl"))
+detected_crops = build_detection_crops(
+    ap_detection_pickle=Path("datasets/internal/preprocessed/FNF_AP_Detection_data.pkl"),
+    lat_detection_pickle=Path("datasets/internal/preprocessed/FNF_LAT_Detection_data.pkl"),
+    ap_checkpoint_template="models/detection/detection_ap_fold{fold}_best.pth",
+    lat_checkpoint_template="models/detection/detection_lat_fold{fold}_best.pth",
+    device="cuda",
+)
 config = TrainingConfig(
     epochs=200,
     batch_size=32,
@@ -165,7 +181,13 @@ config = TrainingConfig(
     task="g12_vs_g34",
     use_pretrained=True,
 )
-reports = train_model_cross_validation(dataset, config, num_folds=5, device="cuda")
+reports = train_model_cross_validation(
+    dataset,
+    config,
+    num_folds=5,
+    device="cuda",
+    detected_crops=detected_crops,
+)
 print(aggregate_reports(reports))
 ```
 
