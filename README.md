@@ -32,7 +32,7 @@ pip install -e ".[dev]"
 
 After installation, the following console commands are available:
 
-- `fnf-prepare-internal` – preprocess the internal dataset into detection/ classification pickles used by the paper
+- `fnf-prepare-internal` – preprocess the internal dataset into detection/classification pickles used by the paper
 - `fnf-prepare-external` – preprocess an external dataset into pickles for evaluation
 - `fnf-train-classifier` – train a multi-view classifier with cross-validation (supports `--task g12_vs_g34` or `--task g3_vs_g4`)
 - `fnf-evaluate-classifier` – run inference with saved checkpoints (single model or ensemble) and export predictions
