@@ -1,6 +1,6 @@
-# FNF Open
+# FNF Open Repo
 
-**FNF Open** is a lightweight, modular Python library for preprocessing hip radiographs and
+**FNF Open Repo** is a lightweight, modular Python library for preprocessing hip radiographs and
 classifying femoral neck fractures (FNF) from AP and lateral views. It extracts the reusable
 components from the original research notebooks and exposes them as a clear, tested API
 together with simple command‑line tools.
